@@ -1,0 +1,6 @@
+{
+  "name": "UniAssist AI",
+  "description": "Production-grade University AI Chatbot and Student-Support Platform with grounded RAG, anti-hallucination guardrails, and role-based knowledge management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

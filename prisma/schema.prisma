@@ -1,0 +1,372 @@
+// UniAssist AI — Enterprise University Information & Student Support Platform
+// Database Schema for PostgreSQL & Prisma ORM
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum RoleType {
+  STUDENT
+  FACULTY
+  STAFF
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum DocumentStatus {
+  PROCESSING
+  INDEXED
+  FAILED
+  OUTDATED
+  ARCHIVED
+}
+
+enum DocumentCategory {
+  ADMISSIONS
+  ACADEMICS
+  FEES
+  SCHOLARSHIPS
+  EXAMINATIONS
+  POLICIES
+  DEPARTMENTS
+  FACULTY
+  STUDENT_AFFAIRS
+  HOSTEL
+  LIBRARY
+  TRANSPORTATION
+  CAMPUS
+  EVENTS
+  GENERAL
+}
+
+enum PriorityLevel {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum FeedbackType {
+  HELPFUL
+  UNHELPFUL
+  INCORRECT_INFORMATION
+  INAPPROPRIATE
+}
+
+// -----------------------------------------------------------------------------
+// Core Users & Authentication (RBAC)
+// -----------------------------------------------------------------------------
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  name          String
+  avatarUrl     String?
+  role          RoleType       @default(STUDENT)
+  studentId     String?        @unique
+  departmentId  String?
+  department    Department?    @relation(fields: [departmentId], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  isDeleted     Boolean        @default(false)
+
+  conversations Conversation[]
+  feedback      Feedback[]
+  auditLogs     AuditLog[]
+  notifications UserNotification[]
+
+  @@index([role])
+  @@index([email])
+}
+
+// -----------------------------------------------------------------------------
+// Academic Structure (Departments, Programs, Courses, Faculty)
+// -----------------------------------------------------------------------------
+
+model Department {
+  id          String         @id @default(uuid())
+  code        String         @unique // e.g., "CS", "EE", "BBA"
+  name        String
+  description String?
+  headOfDept  String?        // HOD Name
+  hodEmail    String?
+  building    String?
+  contact     String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  users       User[]
+  programs    Program[]
+  faculty     Faculty[]
+  courses     Course[]
+  documents   Document[]
+}
+
+model Program {
+  id            String       @id @default(uuid())
+  code          String       @unique // e.g., "BSCS", "MSCS", "BSEE"
+  name          String
+  level         String       // Undergraduate, Graduate, Postgraduate
+  durationYears Float        @default(4.0)
+  totalCredits  Int          @default(130)
+  departmentId  String
+  department    Department   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  courses       Course[]
+}
+
+model Course {
+  id            String       @id @default(uuid())
+  code          String       @unique // e.g., "CS-101", "CS-204"
+  title         String
+  creditHours   Int
+  description   String
+  syllabusSummary String?
+  prerequisites String?
+  departmentId  String
+  department    Department   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  programId     String?
+  program       Program?     @relation(fields: [programId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Faculty {
+  id            String       @id @default(uuid())
+  name          String
+  designation   String       // e.g., "Professor", "Associate Professor", "Dean"
+  email         String       @unique
+  officeLocation String?
+  officeHours   String?
+  researchArea  String?
+  departmentId  String
+  department    Department   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// Knowledge Base & RAG Pipeline (Documents, Versions, Chunks, Embeddings)
+// -----------------------------------------------------------------------------
+
+model Document {
+  id            String           @id @default(uuid())
+  title         String
+  description   String?
+  fileName      String
+  fileSize      Int
+  mimeType      String
+  fileUrl       String?
+  category      DocumentCategory @default(GENERAL)
+  accessLevel   RoleType         @default(STUDENT) // Minimum role required
+  academicYear  String           @default("2026-2027")
+  version       String           @default("1.0.0")
+  status        DocumentStatus   @default(PROCESSING)
+  departmentId  String?
+  department    Department?      @relation(fields: [departmentId], references: [id])
+  uploadedBy    String?
+  uploadedAt    DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  isLatest      Boolean          @default(true)
+  metadata      Json?
+
+  versions      DocumentVersion[]
+  chunks        DocumentChunk[]
+
+  @@index([category])
+  @@index([status])
+  @@index([accessLevel])
+}
+
+model DocumentVersion {
+  id            String           @id @default(uuid())
+  documentId    String
+  document      Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionNumber String
+  changeLog     String?
+  fileUrl       String?
+  createdAt     DateTime         @default(now())
+}
+
+model DocumentChunk {
+  id            String           @id @default(uuid())
+  documentId    String
+  document      Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chunkIndex    Int
+  content       String           @db.Text
+  tokenCount    Int
+  heading       String?
+  pageNumber    Int?
+  metadata      Json?
+  createdAt     DateTime         @default(now())
+
+  embeddingRef  EmbeddingReference?
+  messageSources MessageSource[]
+
+  @@index([documentId])
+}
+
+model EmbeddingReference {
+  id            String           @id @default(uuid())
+  chunkId       String           @unique
+  chunk         DocumentChunk    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  modelName     String           @default("gemini-embedding-2-preview")
+  dimensions    Int              @default(768)
+  vectorHash    String?
+  createdAt     DateTime         @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// Conversations, Messages & Grounding Citations
+// -----------------------------------------------------------------------------
+
+model Conversation {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String         @default("New Conversation")
+  isPinned      Boolean        @default(false)
+  isArchived    Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  messages      Message[]
+
+  @@index([userId])
+  @@index([isPinned])
+}
+
+model Message {
+  id             String         @id @default(uuid())
+  conversationId String
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String         // "user" | "assistant" | "system"
+  content        String         @db.Text
+  tokenCount     Int?
+  confidence     Float?         // Anti-hallucination confidence score (0.0 - 1.0)
+  isGrounded     Boolean        @default(true)
+  isStreaming    Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+
+  sources        MessageSource[]
+  feedback       Feedback?
+
+  @@index([conversationId])
+}
+
+model MessageSource {
+  id          String        @id @default(uuid())
+  messageId   String
+  message     Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chunkId     String
+  chunk       DocumentChunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  documentTitle String
+  relevanceScore Float      // Similarity score (0.0 - 1.0)
+  pageNumber  Int?
+  section     String?
+  excerpt     String        @db.Text
+  createdAt   DateTime      @default(now())
+
+  @@index([messageId])
+}
+
+model Feedback {
+  id          String       @id @default(uuid())
+  messageId   String       @unique
+  message     Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        FeedbackType
+  comment     String?
+  reportedText String?     @db.Text
+  isResolved  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// University Announcements & Notifications
+// -----------------------------------------------------------------------------
+
+model Announcement {
+  id            String         @id @default(uuid())
+  title         String
+  content       String         @db.Text
+  category      DocumentCategory
+  priority      PriorityLevel  @default(NORMAL)
+  targetAudience RoleType      @default(STUDENT) // ALL, STUDENT, FACULTY, STAFF
+  departmentId  String?
+  isPinned      Boolean        @default(false)
+  publishDate   DateTime       @default(now())
+  expiryDate    DateTime?
+  createdBy     String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([priority])
+  @@index([publishDate])
+}
+
+model Notification {
+  id          String         @id @default(uuid())
+  title       String
+  message     String
+  type        String         // "ANNOUNCEMENT", "EXAM", "FEE", "SYSTEM"
+  priority    PriorityLevel  @default(NORMAL)
+  link        String?
+  createdAt   DateTime       @default(now())
+
+  recipients  UserNotification[]
+}
+
+model UserNotification {
+  id             String        @id @default(uuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notificationId String
+  notification   Notification  @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  isRead         Boolean       @default(false)
+  readAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@unique([userId, notificationId])
+}
+
+// -----------------------------------------------------------------------------
+// Audit Logs & System FAQs
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id          String       @id @default(uuid())
+  userId      String?
+  user        User?        @relation(fields: [userId], references: [id])
+  action      String       // e.g., "UPLOAD_DOCUMENT", "REINDEX_DOC", "ROLE_CHANGE"
+  entity      String       // e.g., "Document", "SystemConfig"
+  entityId    String?
+  ipAddress   String?
+  details     Json?
+  createdAt   DateTime     @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+}
+
+model FAQ {
+  id          String           @id @default(uuid())
+  question    String
+  answer      String           @db.Text
+  category    DocumentCategory
+  departmentId String?
+  viewCount   Int              @default(0)
+  isFeatured  Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([category])
+}
